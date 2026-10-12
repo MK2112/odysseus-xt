@@ -587,6 +587,8 @@ def _cookbook_default_launch_cmd(repo_id: str, engine: str, *, port: int = 8000,
         return f"python3 scripts/diffusion_server.py --model {repo_id} --host 0.0.0.0 --port {port}"
     if engine in {"sglang", "sgl"}:
         return f"python3 -m sglang.launch_server --model-path {repo_id} --host 0.0.0.0 --port {port}"
+    if engine in {"transformers", "hf", "peft", "lora"}:
+        return f"python3 scripts/transformers_server.py --model {repo_id} --host 0.0.0.0 --port {port}"
     if engine in {"llama.cpp", "llamacpp", "llama"}:
         siblings = [str(s) for s in ((info or {}).get("siblings") or []) if str(s).lower().endswith(".gguf")]
         if siblings:

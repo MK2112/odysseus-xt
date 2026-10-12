@@ -992,6 +992,31 @@ export function _buildServeCmd(f, modelName, backend) {
       // Cookbook Context/Auto control there for MLX launches.
       cmd += ` --max-tokens ${mlxMaxTokens}`;
     }
+  } else if (backend === 'transformers') {
+    // PEFT LoRA serving for small/base models that don't need (or can't use)
+    // vLLM — e.g. a 1B instruct model plus a fine-tuned adapter repo with an
+    // optional subfolder (`name=org/repo@best_model`). Served by
+    // scripts/transformers_server.py as an OpenAI-compatible endpoint where
+    // each adapter is addressable by its name via the `model` field.
+    const _hfGpu = (f.gpus || f.gpu_id || '').toString().trim();
+    cmd += _gpuEnvPrefix(_hfGpu);
+    const hfPy = _isWindows() ? 'python' : _py3Bin;
+    const hfHost = f.host ? '0.0.0.0' : '127.0.0.1';
+    cmd += `${hfPy} scripts/transformers_server.py --model ${_shellQuote(modelName)} --host ${hfHost} --port ${f.port || '8000'}`;
+    const _hfAdapters = _listField(f.hf_lora_adapters);
+    for (const _adapter of _hfAdapters) cmd += ` --adapter ${_shellQuote(_adapter)}`;
+    const _hfTokenizer = String(f.hf_tokenizer || '').trim();
+    if (_hfTokenizer) cmd += ` --tokenizer ${_shellQuote(_hfTokenizer)}`;
+    const _hfServedName = String(f.hf_served_model_name || f.served_model_name || '').trim();
+    if (_hfServedName) cmd += ` --served-model-name ${_shellQuote(_hfServedName)}`;
+    if (f.dtype && f.dtype !== 'auto') cmd += ` --dtype ${f.dtype}`;
+    // Explicit per-request budget only — do NOT fall back to the shared
+    // Context field here: for this backend it would become max_new_tokens,
+    // turning a 20k context default into a 20k-token generation. Blank
+    // keeps the server default (2048); per-request max_tokens still wins.
+    const _hfMaxTokens = String(f.hf_max_tokens || '').trim();
+    if (/^\d+$/.test(_hfMaxTokens)) cmd += ` --max-tokens ${_hfMaxTokens}`;
+    if (f.trust_remote || f.hf_trust_remote) cmd += ' --trust-remote-code';
   }
   return cmd;
 }

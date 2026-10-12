@@ -243,10 +243,10 @@ function _serveBackendWarning(model, repo, backend, fields = {}) {
       body: 'This model looks like AWQ/GPTQ/FP8 safetensors, but unified-memory local serving expects GGUF. Use vLLM/SGLang on a compatible GPU server, or download a GGUF version for llama.cpp/Ollama.',
     };
   }
-  if (ggufLike && (backend === 'vllm' || backend === 'sglang')) {
+  if (ggufLike && (backend === 'vllm' || backend === 'sglang' || backend === 'transformers')) {
     return {
       title: 'GGUF needs llama.cpp or Ollama',
-      body: 'This model looks like GGUF. vLLM/SGLang expect HuggingFace safetensors-style repos. Choose llama.cpp/Ollama for GGUF, or download a safetensors model for vLLM/SGLang.',
+      body: 'This model looks like GGUF. vLLM/SGLang/Transformers expect HuggingFace safetensors-style repos. Choose llama.cpp/Ollama for GGUF, or download a safetensors model for vLLM/SGLang/Transformers.',
     };
   }
   return null;
@@ -776,12 +776,12 @@ function _remoteWindowsDiffusersUnsupported(target) {
 
 function _backendChoicesForTarget(target) {
   if (target?.platform === 'windows') {
-    if (_remoteWindowsDiffusersUnsupported(target)) return [['llamacpp','llama.cpp']];
-    return [['llamacpp','llama.cpp'],['diffusers','Diffusers']];
+    if (_remoteWindowsDiffusersUnsupported(target)) return [['llamacpp','llama.cpp'],['transformers','Transformers']];
+    return [['llamacpp','llama.cpp'],['diffusers','Diffusers'],['transformers','Transformers']];
   }
   return _isMetal()
-    ? [['mlx','MLX'],['mlx_image','MLX Image'],['llamacpp','llama.cpp'],['ollama','Ollama']]
-    : [['vllm','vLLM'],['sglang','SGLang'],['llamacpp','llama.cpp'],['ollama','Ollama'],['mlx','MLX'],['mlx_image','MLX Image'],['diffusers','Diffusers']];
+    ? [['mlx','MLX'],['mlx_image','MLX Image'],['llamacpp','llama.cpp'],['ollama','Ollama'],['transformers','Transformers']]
+    : [['vllm','vLLM'],['sglang','SGLang'],['llamacpp','llama.cpp'],['ollama','Ollama'],['mlx','MLX'],['mlx_image','MLX Image'],['diffusers','Diffusers'],['transformers','Transformers']];
 }
 
 function _dependencyPkgForServeBackend(backend, modelName = '') {
@@ -797,6 +797,7 @@ function _dependencyPkgForServeBackend(backend, modelName = '') {
     mlx: 'mlx_lm',
     mlx_image: 'mflux',
     diffusers: 'diffusers',
+    transformers: 'transformers_lora',
   };
   return packageByBackend[backend];
 }
@@ -827,6 +828,8 @@ function _cachedAdapterSelectHtml(kind, currentRepo = '') {
     ? 'hwfit-backend-diffusers'
     : kind === 'mlx_lora_paths'
     ? 'hwfit-backend-mlx_image'
+    : kind === 'hf_lora_adapters'
+    ? 'hwfit-backend-transformers'
     : '';
   if (!adapters.length) {
     return `<label class="hwfit-cached-adapter-label ${cls}" style="grid-column:1 / -1;">Cached adapter <select class="hwfit-cached-adapter-select" data-adapter-kind="${esc(kind)}" disabled style="height:30px;width:100%;background:var(--bg);color:var(--fg-muted);border:1px solid var(--border);border-radius:4px;font:inherit;font-size:11px;opacity:0.75;"><option value="">No cached adapters found</option></select></label>`;
@@ -851,6 +854,7 @@ async function _fetchServeRuntimePackage(panel, backend) {
     mlx: 'mlx_lm',
     mlx_image: 'mflux',
     diffusers: 'diffusers',
+    transformers: 'transformers_lora',
   };
   const packageName = _dependencyPkgForServeBackend(backend, repo) || packageByBackend[backend];
   if (!packageName) return null;
@@ -870,7 +874,7 @@ async function _fetchServeRuntimePackage(panel, backend) {
 }
 
 function _runtimeNoteText(backend, pkg, target) {
-  const labels = { vllm: 'vLLM', sglang: 'SGLang', llamacpp: 'llama.cpp', mlx: 'MLX', mlx_image: 'MLX Image', diffusers: 'Diffusers' };
+  const labels = { vllm: 'vLLM', sglang: 'SGLang', llamacpp: 'llama.cpp', mlx: 'MLX', mlx_image: 'MLX Image', diffusers: 'Diffusers', transformers: 'Transformers' };
   const label = labels[backend] || backend;
   if (!pkg) return `${label} readiness unavailable for ${target.label}.`;
   const note = pkg.status_note || pkg.update_note || '';
@@ -1544,6 +1548,12 @@ function _rerenderCachedModels() {
           : `This model's download isn't complete yet (${esc(m.size || 'partial')}). The serve will start but is likely to crash on a missing shard. Wait for the download to finish, or relaunch after it's done.`;
         panelHtml += `<div class="hwfit-serve-warn" style="margin:0 0 8px;padding:6px 10px;border-radius:5px;font-size:11px;background:color-mix(in srgb, var(--color-warning, #f0ad4e) 14%, transparent);border:1px solid color-mix(in srgb, var(--color-warning, #f0ad4e) 40%, transparent);color:var(--color-warning, #f0ad4e);display:flex;gap:6px;align-items:flex-start;line-height:1.4;"><span aria-hidden="true">⚠</span><span>${_warnText}</span></div>`;
       }
+      // An adapter card holds LoRA weights, not a servable base model —
+      // launching it as the base fails on every backend. Point at the
+      // attach-to-base flow instead of letting the launch fail cryptically.
+      if (m && _looksLikeAdapterModel(m)) {
+        panelHtml += `<div class="hwfit-serve-warn" style="margin:0 0 8px;padding:6px 10px;border-radius:5px;font-size:11px;background:color-mix(in srgb, var(--color-warning, #f0ad4e) 14%, transparent);border:1px solid color-mix(in srgb, var(--color-warning, #f0ad4e) 40%, transparent);color:var(--color-warning, #f0ad4e);display:flex;gap:6px;align-items:flex-start;line-height:1.4;"><span aria-hidden="true">⚠</span><span>This looks like a LoRA adapter, not a base model — it can't be served on its own. Open the base model card instead, pick the Transformers engine (or vLLM), and attach this adapter in the LoRA field.</span></div>`;
+      }
       panelHtml += `<div class="hwfit-serve-vision-warn" style="display:none;margin:0 0 8px;padding:6px 10px;border-radius:5px;font-size:11px;background:color-mix(in srgb, var(--color-warning, #f0ad4e) 14%, transparent);border:1px solid color-mix(in srgb, var(--color-warning, #f0ad4e) 40%, transparent);color:var(--color-warning, #f0ad4e);gap:6px;align-items:flex-start;line-height:1.4;"><span aria-hidden="true">⚠</span><span>Vision is enabled, but no mmproj GGUF projector was found in the cached model scan. Download an mmproj-*.gguf for this model, then refresh the cached model list before launching.</span></div>`;
       // Row 1: Engine + Server + Env
       panelHtml += `<div class="hwfit-serve-row">`;
@@ -1554,7 +1564,7 @@ function _rerenderCachedModels() {
       // stays as the source-of-truth so every existing change handler
       // (updateBackendVisibility, runtime readiness, command builder)
       // still fires via dispatchEvent('change') on selection.
-      panelHtml += `<label>${_l('Engine','Inference engine: MLX, vLLM, SGLang, llama.cpp, Ollama, or Diffusers')}<div class="hwfit-backend-picker" data-backend-picker style="position:relative;width:100%;"><select class="hwfit-sf hwfit-backend-source" data-field="backend" style="display:none;">${backendOpts}</select><button type="button" class="hwfit-backend-btn" data-backend-btn aria-haspopup="listbox" aria-expanded="false" style="display:flex;align-items:center;gap:6px;width:100%;height:32px;padding:0 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font:inherit;font-size:11px;cursor:pointer;text-align:left;position:relative;top:-4px;"><span class="hwfit-backend-btn-icon" data-backend-icon-slot aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--accent, var(--red));flex-shrink:0;"></span><span class="hwfit-backend-btn-label" data-backend-label style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="opacity:0.6;flex-shrink:0;"><polyline points="6 9 12 15 18 9"/></svg></button><div class="hwfit-backend-menu" data-backend-menu role="listbox" hidden style="position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:100;background:var(--panel, var(--bg));border:1px solid var(--border);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.22);padding:4px;"></div></div></label>`;
+      panelHtml += `<label>${_l('Engine','Inference engine: vLLM, SGLang, llama.cpp, Ollama, MLX, Diffusers, or Transformers (base + PEFT LoRA)')}<div class="hwfit-backend-picker" data-backend-picker style="position:relative;width:100%;"><select class="hwfit-sf hwfit-backend-source" data-field="backend" style="display:none;">${backendOpts}</select><button type="button" class="hwfit-backend-btn" data-backend-btn aria-haspopup="listbox" aria-expanded="false" style="display:flex;align-items:center;gap:6px;width:100%;height:32px;padding:0 8px;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:4px;font:inherit;font-size:11px;cursor:pointer;text-align:left;position:relative;top:-4px;"><span class="hwfit-backend-btn-icon" data-backend-icon-slot aria-hidden="true" style="display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;color:var(--accent, var(--red));flex-shrink:0;"></span><span class="hwfit-backend-btn-label" data-backend-label style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="opacity:0.6;flex-shrink:0;"><polyline points="6 9 12 15 18 9"/></svg></button><div class="hwfit-backend-menu" data-backend-menu role="listbox" hidden style="position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:100;background:var(--panel, var(--bg));border:1px solid var(--border);border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,0.22);padding:4px;"></div></div></label>`;
       panelHtml += `<input type="hidden" class="hwfit-sf" data-field="host" value="${esc(_es.remoteHost || '')}" />`;
       // Inference mode pill (llama.cpp only) — lives directly to the
       // RIGHT of Backend in Row 1 so the engine and the GPU/CPU choice
@@ -1616,13 +1626,13 @@ function _rerenderCachedModels() {
       // TP / Context / GPU / GPU Mem / Max Seqs / Dtype. Everything else
       // (Swap, KV Cache, Attention backend, Env vars, llama.cpp batch/ubatch)
       // moved to the Advanced fold below to keep this row scannable.
-      panelHtml += `<div class="hwfit-serve-row hwfit-serve-row-core hwfit-backend-vllm hwfit-backend-sglang hwfit-backend-llamacpp hwfit-backend-ollama hwfit-backend-mlx">`;
+      panelHtml += `<div class="hwfit-serve-row hwfit-serve-row-core hwfit-backend-vllm hwfit-backend-sglang hwfit-backend-llamacpp hwfit-backend-ollama hwfit-backend-mlx hwfit-backend-transformers">`;
       // Order: Dtype → TP → Context → Max Seqs → GPUs → GPU Mem.
       // Dtype moved down from Row 1 to make space for the Inference pill
       // (llama.cpp GPU/CPU toggle, llamacpp-only). GPUs lives next to
       // GPU Mem so "which devices + how much" sit adjacent. Max Seqs
       // follows Context per the "request-shape" cluster.
-      panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang hwfit-backend-llamacpp">${_l('Dtype','Data type for weights. auto picks best for GPU')}<select class="hwfit-sf" data-field="dtype">${dtypeOpts}</select></label>`;
+      panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang hwfit-backend-llamacpp hwfit-backend-transformers">${_l('Dtype','Data type for weights. auto picks best for GPU')}<select class="hwfit-sf" data-field="dtype">${dtypeOpts}</select></label>`;
       panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang">${_l('TP','Tensor Parallelism — split model across N GPUs')}<select class="hwfit-sf" data-field="tp">${tpOpts}</select></label>`;
       // ctx resets to the model's max on every panel open (the real ctx slider
       // lives in the Scan/Download toolbar — see cookbook.js .hwfit-ctx-control).
@@ -1666,7 +1676,7 @@ function _rerenderCachedModels() {
       panelHtml += `<label class="hwfit-backend-vllm">${_l('Block Size','vLLM --block-size. Controls KV-cache block granularity. Leave blank for runtime default; some sparse-attention or custom runtimes need a specific value.')}<input type="text" class="hwfit-sf" data-field="vllm_block_size" value="${esc(svm('vllm_block_size', _isMiniMaxM3 ? '128' : ''))}" placeholder="auto" /></label>`;
       panelHtml += `<label class="hwfit-backend-vllm">${_l('Swap','vLLM CPU swap space in GB. Blank/off omits the flag; enter a positive number only for older vLLM runtimes that support --swap-space.')}<input type="text" class="hwfit-sf" data-field="swap" value="${esc(sv('swap', ''))}" placeholder="off" /></label>`;
       panelHtml += _cachedAdapterSelectHtml('vllm_lora_modules', repo);
-      panelHtml += `<label class="hwfit-backend-vllm" style="grid-column:1 / -1;">${_l('LoRA Modules','vLLM LoRA modules, one per line or comma-separated, using name=path. Adds --enable-lora --lora-modules.')}<input type="text" class="hwfit-sf" data-field="vllm_lora_modules" value="${esc(sv('vllm_lora_modules', ''))}" placeholder="style=/path/to/lora or style=org/repo" style="width:100%;" /></label>`;
+      panelHtml += `<label class="hwfit-backend-vllm" style="grid-column:1 / -1;">${_l('LoRA Modules','vLLM LoRA modules, one per line or comma-separated, using name=path. Adds --enable-lora --lora-modules. Adapters living in a repo subfolder (e.g. best_model) need baking first via scripts/merge_peft_lora.py; after launch, confirm the adapter is live with scripts/verify_lora_active.py — registration alone does not prove it.')}<input type="text" class="hwfit-sf" data-field="vllm_lora_modules" value="${esc(sv('vllm_lora_modules', ''))}" placeholder="style=/path/to/lora or style=org/repo" style="width:100%;" /></label>`;
       {
         const _envPresetDefault = _isMiniMaxM3 ? 'minimax_m3_cuda' : '';
         const _envPresetVal = svm('vllm_env_preset', _envPresetDefault);
@@ -1684,6 +1694,16 @@ function _rerenderCachedModels() {
       // CSS places this beside vLLM's Env Preset, but lets it span the full
       // row for SGLang where that preset field is hidden.
       panelHtml += `<label class="hwfit-backend-vllm hwfit-backend-sglang hwfit-extra-env-label">${_l('Env','Extra KEY=VALUE env-var pairs prepended to the launch (space-separated). The Env Preset above covers the usual MiniMax M3 values; use this for additional overrides.')}<input type="text" class="hwfit-sf" data-field="extra_env" value="${esc(svm('extra_env', sv('extra_env','')))}" placeholder="NCCL_P2P_DISABLE=1" style="width:100%;" /></label>`;
+      panelHtml += `</div>`;
+      // Row 2a: Transformers (PEFT LoRA) settings — base model plus one or
+      // more fine-tuned adapters served as OpenAI-compatible model ids.
+      panelHtml += `<div class="hwfit-serve-row hwfit-backend-transformers">`;
+      panelHtml += `<label class="hwfit-backend-transformers" style="grid-column:1 / -1;">${_l('Served Name','Transformers --served-model-name. The OpenAI model id reported for the base weights; each adapter keeps its own name.')}<input type="text" class="hwfit-sf" data-field="hf_served_model_name" value="${esc(sv('hf_served_model_name', ''))}" placeholder="${esc(repo)}" style="width:100%;" /></label>`;
+      panelHtml += _cachedAdapterSelectHtml('hf_lora_adapters', repo);
+      panelHtml += `<label class="hwfit-backend-transformers" style="grid-column:1 / -1;">${_l('LoRA Adapters','PEFT LoRA adapters, one per line, using name=source. Appends a subfolder with @ for repos that keep the best checkpoint in a subdir, e.g. dft=org/repo@best_model. Adds repeatable --adapter. After launch, prove the adapter is live with scripts/verify_lora_active.py; for vLLM/SGLang or a backend-proof checkpoint, bake it with scripts/merge_peft_lora.py.')}<input type="text" class="hwfit-sf" data-field="hf_lora_adapters" value="${esc(sv('hf_lora_adapters', ''))}" placeholder="dft=org/adapter-repo@best_model" style="width:100%;" /></label>`;
+      panelHtml += `<label class="hwfit-backend-transformers" style="grid-column:1 / -1;">${_l('Tokenizer','Tokenizer source override. Blank = first adapter when it ships tokenizer files, else the base model. Adds --tokenizer.')}<input type="text" class="hwfit-sf" data-field="hf_tokenizer" value="${esc(sv('hf_tokenizer', ''))}" placeholder="auto (adapter, else base)" style="width:100%;" /></label>`;
+      panelHtml += `<label class="hwfit-backend-transformers">${_l('Max Tokens','Default max_new_tokens per request. Blank = server default (2048); a per-request max_tokens still wins.')}<input type="text" class="hwfit-sf" data-field="hf_max_tokens" value="${esc(sv('hf_max_tokens', ''))}" placeholder="2048" /></label>`;
+      panelHtml += `<label class="hwfit-sf-cb hwfit-backend-transformers"><input type="checkbox" class="hwfit-sf" data-field="hf_trust_remote"${sv('hf_trust_remote', sv('trust_remote', false))?' checked':''} /> Trust Remote Code${_h('Transformers: allow model code from HuggingFace via --trust-remote-code')}</label>`;
       panelHtml += `</div>`;
       // Row 2b: Diffusers settings
       const diffDefaultNegative = 'low quality, blurry, out of focus, deformed, distorted, disfigured, unfinished, smudged, watermark, artifacts';
@@ -2216,6 +2236,7 @@ function _rerenderCachedModels() {
         llamacpp: '<svg width="14" height="14" viewBox="0 0 600 600" fill="none" aria-hidden="true"><path d="M600 392L504.249 558L504.137 557.929C487.252 584.069 458.193 600 426.864 600H120L240 392H600Z" fill="currentColor"/><path d="M240 392H0L199.602 46.0254C216.032 17.5463 246.411 0 279.29 0H466.154L240 392Z" fill="currentColor"/></svg>',
         ollama: '',
         diffusers: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M5 19l2-2M17 7l2-2"/></svg>',
+        transformers: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l8 4.5v9L12 20l-8-4.5v-9L12 2z"/><path d="M12 11l8-4.5M12 11v9M12 11L4 6.5"/></svg>',
       };
 
       // ── Custom Backend picker wiring ────────────────────────────────
@@ -2333,7 +2354,7 @@ function _rerenderCachedModels() {
         const backend = panel.querySelector('[data-field="backend"]')?.value || 'vllm';
         const noteText = note.querySelector('.hwfit-serve-runtime-text');
         const _writeNote = (s) => { if (noteText) noteText.textContent = s; else note.textContent = s; };
-        if (!['vllm', 'sglang', 'llamacpp', 'mlx', 'mlx_image', 'diffusers'].includes(backend)) {
+        if (!['vllm', 'sglang', 'llamacpp', 'mlx', 'mlx_image', 'diffusers', 'transformers'].includes(backend)) {
           note.style.display = 'none';
           _writeNote('');
           return;
@@ -2427,8 +2448,17 @@ function _rerenderCachedModels() {
             }
           });
         } else {
+          // Repeatable --adapter 'name=source@subfolder' flags: collect every
+          // occurrence (the single-capture _ex helper would swallow the
+          // subsequent --adapter flags into one span).
+          const _hfAdaptersFromCmd = Array.from(
+            cmd.matchAll(/--adapter\s+('(?:[^']|'\\''+)*'|"(?:[^"\\]|\\.)*"|\S+)/g),
+            // _shellQuote encodes ' as '\'' — strip one outer pair, then
+            // decode the inner escapes back to a plain apostrophe.
+            m => String(m[1] || '').replace(/^'|'$/g, '').replace(/'\\''/g, "'").trim()
+          ).filter(Boolean).join('\n');
           const fields = {
-            backend: cmd.includes('llama_cpp') || cmd.includes('llama-server') ? 'llamacpp' : cmd.includes('mlx_image_server') ? 'mlx_image' : cmd.includes('mlx_lm.server') ? 'mlx' : cmd.includes('diffusion_server') ? 'diffusers' : cmd.includes('sglang') ? 'sglang' : cmd.includes('ollama') ? 'ollama' : 'vllm',
+            backend: cmd.includes('llama_cpp') || cmd.includes('llama-server') ? 'llamacpp' : cmd.includes('mlx_image_server') ? 'mlx_image' : cmd.includes('transformers_server') ? 'transformers' : cmd.includes('mlx_lm.server') ? 'mlx' : cmd.includes('diffusion_server') ? 'diffusers' : cmd.includes('sglang') ? 'sglang' : cmd.includes('ollama') ? 'ollama' : 'vllm',
             port: _ex(/--port\s+(\d+)/) || '8000',
             tp: _ex(/--tensor-parallel-size\s+(\d+)/) || '1',
             ctx: _ex(/--max-model-len\s+(\d+)/) || _ex(/--context-length\s+(\d+)/) || _ex(/--max-tokens\s+(\d+)/) || _ex(/--n_ctx\s+(\d+)/) || _ex(/-c\s+(\d+)/) || '8192',
@@ -2455,11 +2485,16 @@ function _rerenderCachedModels() {
 	            mlx_lora_style: _ex(/--lora-style\s+'?([^'\s]+)'?/) || '',
             mlx_lora_paths: (_ex(/--lora-paths\s+(.+?)(?:\s+--|$)/) || '').replace(/'\s+'/g, '\n').replace(/^'|'$/g, ''),
             mlx_lora_scales: (_ex(/--lora-scales\s+(.+?)(?:\s+--|$)/) || '').replace(/'\s+'/g, '\n').replace(/^'|'$/g, ''),
+            hf_lora_adapters: _hfAdaptersFromCmd,
+            hf_tokenizer: _ex(/--tokenizer\s+'([^']*)'/) || _ex(/--tokenizer\s+(\S+)/) || '',
+            hf_served_model_name: _ex(/--served-model-name\s+'([^']*)'/) || _ex(/--served-model-name\s+(\S+)/) || '',
+            hf_max_tokens: _ex(/--max-tokens\s+(\d+)/) || '',
             venv: p.envPath || '',
           };
           const checks = {
             enforce_eager: cmd.includes('--enforce-eager'),
             trust_remote: cmd.includes('--trust-remote-code'),
+            hf_trust_remote: cmd.includes('--trust-remote-code'),
             prefix_cache: cmd.includes('--enable-prefix-caching'),
             auto_tool: cmd.includes('--enable-auto-tool-choice'),
             flash_attn: /--flash-attn\s+on\b/.test(cmd),
@@ -3223,7 +3258,7 @@ function _rerenderCachedModels() {
           if (!target) return;
           const current = String(target.value || '').trim();
           let next = repoId;
-          if (kind === 'vllm_lora_modules') {
+          if (kind === 'vllm_lora_modules' || kind === 'hf_lora_adapters') {
             const name = repoId.split('/').pop().replace(/[^A-Za-z0-9_.-]+/g, '_') || 'adapter';
             next = `${name}=${repoId}`;
           }

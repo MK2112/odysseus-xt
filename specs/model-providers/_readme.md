@@ -45,6 +45,7 @@ Current reader dispatch does not infer a provider from payload shape. It uses an
 
 - [anthropic.md](anthropic.md): identity-only Models API and native Messages runtime adapter.
 - [vllm.md](vllm.md): common-port identity hint; deployment capability remains unknown.
+- [transformers.md](transformers.md): base + PEFT LoRA identity hint; tool-calling remains text-channel only.
 - [sglang.md](sglang.md): common-port identity hint; parser/config-dependent capability remains unknown.
 - [hugging-face.md](hugging-face.md): Hub observations and download/fit metadata without a canonical reader.
 

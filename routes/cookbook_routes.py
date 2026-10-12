@@ -158,6 +158,56 @@ def _serve_port_from_cmd(cmd: str) -> str:
     return m.group(1) if m else ""
 
 
+def _served_lora_names(cmd: str | None) -> list[str]:
+    """Extract LoRA adapter model ids from a serve command.
+
+    Covers the Transformers backend's repeatable ``--adapter
+    name=source[@subfolder]`` flags and vLLM's ``--lora-modules
+    name=path ...`` list. Returned names are the ids the server exposes
+    under ``/v1/models`` (kept endpoint-scoped by the caller). Best-effort:
+    never raises, returns [] when nothing parses.
+    """
+    names: list[str] = []
+    if not cmd:
+        return names
+    try:
+        # Transformers: every --adapter occurrence carries one spec.
+        for m in re.finditer(r"--adapter\s+('(?:[^']|'\\''+)*'|\"(?:[^\"\\\\]|\\\\.)*\"|\S+)", cmd):
+            raw = m.group(1).strip()
+            if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in {"'", '"'}:
+                raw = raw[1:-1]
+            raw = raw.replace("'\\''", "'")
+            if "=" in raw:
+                name = raw.split("=", 1)[0].strip()
+            else:
+                name = raw.rstrip("/").rsplit("/", 1)[-1].strip()
+                name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-")
+            if name and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) and name not in names:
+                names.append(name)
+        # vLLM: --lora-modules takes space-separated name=path tokens up to
+        # the next flag.
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            parts = []
+        i = 0
+        while i < len(parts):
+            if parts[i] == "--lora-modules":
+                i += 1
+                while i < len(parts) and not parts[i].startswith("--"):
+                    tok = parts[i]
+                    if "=" in tok:
+                        name = tok.split("=", 1)[0].strip()
+                        if name and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) and name not in names:
+                            names.append(name)
+                    i += 1
+            else:
+                i += 1
+    except Exception:
+        pass
+    return names
+
+
 def _append_openai_port_preflight_lines(lines: list[str], *, cmd: str, expected_model: str) -> None:
     port = _serve_port_from_cmd(cmd)
     if not port:
@@ -1892,6 +1942,13 @@ def setup_cookbook_routes() -> APIRouter:
         # same port while the new launch failed. Keeping the requested model id
         # pinned makes the picker reflect the actual launch intent.
         pinned_models = [mlx_shim_model_id] if mlx_shim_model_id else ([req.repo_id] if req.repo_id else [])
+        # LoRA serves expose extra model ids (one per adapter). Pin those too
+        # so the picker lists the adapter names even before the first
+        # /v1/models probe lands. Each served id stays endpoint-scoped (never
+        # merged globally with the base checkpoint).
+        for _lora_name in _served_lora_names(req.cmd):
+            if _lora_name and _lora_name not in pinned_models:
+                pinned_models.append(_lora_name)
 
         db = SessionLocal()
         try:
@@ -2229,7 +2286,7 @@ def setup_cookbook_routes() -> APIRouter:
             else:
                 runner_lines.append("deactivate 2>/dev/null; hash -r")
             _append_venv_nvidia_library_path_lines(runner_lines, cmd=req.cmd)
-            if "sglang.launch_server" in req.cmd or "mlx_lm.server" in req.cmd or re.search(r"\bvllm\s+serve\b", req.cmd or ""):
+            if "sglang.launch_server" in req.cmd or "mlx_lm.server" in req.cmd or "transformers_server" in req.cmd or re.search(r"\bvllm\s+serve\b", req.cmd or ""):
                 _append_openai_port_preflight_lines(runner_lines, cmd=req.cmd, expected_model=req.repo_id)
             # Show whether the HF token reached this server (masked) — a gated
             # model vLLM has to download will be denied without it.
@@ -2738,6 +2795,26 @@ def setup_cookbook_routes() -> APIRouter:
                 runner_lines.append('if ! ODYSSEUS_DIFFUSION_IMPORT_ERROR="$("$ODYSSEUS_DIFFUSION_CMD_PY" -c "import torch, torchvision, diffusers" 2>&1)"; then')
                 runner_lines.append('  echo "ERROR: Diffusion serving requires PyTorch + Torchvision + diffusers in the launch Python: $ODYSSEUS_DIFFUSION_CMD_PY."')
                 runner_lines.append('  printf "%s\\n" "$ODYSSEUS_DIFFUSION_IMPORT_ERROR"')
+                runner_lines.append('  ODYSSEUS_PREFLIGHT_EXIT=127')
+                runner_lines.append('fi')
+            elif "scripts/transformers_server.py" in req.cmd or ".transformers_server.py" in req.cmd:
+                runner_lines.append('export PATH="$HOME/.local/bin:$PATH"')
+                runner_lines.append(f"ODYSSEUS_SERVE_CMD='{_bash_squote(req.cmd)}'")
+                runner_lines.append('ODYSSEUS_HF_CMD_PY="$(python3 - "$ODYSSEUS_SERVE_CMD" <<\'PY\'')
+                runner_lines.append('import shlex, sys')
+                runner_lines.append('parts = shlex.split(sys.argv[1])')
+                runner_lines.append('py = "python3"')
+                runner_lines.append('for part in parts:')
+                runner_lines.append('    if part.endswith("/bin/python") or part.endswith("/bin/python3") or "/bin/python3." in part:')
+                runner_lines.append('        py = part')
+                runner_lines.append('        break')
+                runner_lines.append('print(py)')
+                runner_lines.append('PY')
+                runner_lines.append(')"')
+                runner_lines.append('if ! ODYSSEUS_HF_IMPORT_ERROR="$("$ODYSSEUS_HF_CMD_PY" -c "import torch, transformers, peft, accelerate" 2>&1)"; then')
+                runner_lines.append('  echo "ERROR: Transformers LoRA serving requires PyTorch + transformers + peft + accelerate in the launch Python: $ODYSSEUS_HF_CMD_PY."')
+                runner_lines.append('  echo "Install with: $ODYSSEUS_HF_CMD_PY -m pip install -U transformers peft accelerate torch fastapi uvicorn huggingface_hub safetensors"')
+                runner_lines.append('  printf "%s\\n" "$ODYSSEUS_HF_IMPORT_ERROR"')
                 runner_lines.append('  ODYSSEUS_PREFLIGHT_EXIT=127')
                 runner_lines.append('fi')
 

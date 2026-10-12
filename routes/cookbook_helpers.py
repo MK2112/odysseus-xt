@@ -1431,6 +1431,16 @@ def _diagnose_serve_output(text: str) -> dict | None:
             [{"label": "install Diffusers image deps in Cookbook Dependencies", "op": "dependency", "package": "diffusers[torch] torchvision accelerate scipy python-multipart"}],
         ),
         (
+            r"No module named '(transformers|peft|accelerate)'|No module named (transformers|peft|accelerate)|Transformers LoRA serving requires",
+            "Transformers LoRA serving requires PyTorch, Transformers, PEFT, and Accelerate.",
+            [{"label": "install Transformers LoRA deps in Cookbook Dependencies", "op": "dependency", "package": "transformers_lora"}],
+        ),
+        (
+            r"invalid --adapter|adapter spec .* (missing|invalid)|adapter_config\.json not found|adapter subfolder not found",
+            "A Transformers --adapter spec is malformed or points at a repo/subfolder without adapter weights.",
+            [{"label": "check the LoRA Adapters field (name=org/repo@subfolder)", "op": "manual"}],
+        ),
+        (
             r"403 Forbidden|401 Unauthorized|Access to model.*is restricted|gated repo|not in the authorized list|awaiting a review",
             "Model access is gated or unauthorized.",
             [{"label": "set HF token and request model access on HuggingFace", "op": "manual"}],

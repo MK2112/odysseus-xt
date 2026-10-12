@@ -141,6 +141,16 @@ const _RECIPES = [
     },
   },
 
+  // ── Transformers + PEFT LoRA ──────────────────────────────────────────
+  {
+    backend: 'transformers_lora',
+    label: 'Base LLM + LoRA adapters (Transformers)',
+    match: () => true,
+    variants: {
+      pip:    { commands: ['python -m pip install -U transformers peft accelerate torch fastapi uvicorn huggingface_hub safetensors'] },
+    },
+  },
+
   // ── llama.cpp ─────────────────────────────────────────────────────────
   {
     backend: 'llama_cpp',
@@ -167,7 +177,7 @@ export function recipeCommands(recipe, variant) {
 // Backends we surface a recipe panel for. Other rows in the Dependencies
 // list keep the existing flat Install/Reinstall button without an expand
 // affordance.
-export const RECIPE_BACKENDS = new Set(['vllm', 'sglang', 'mlx_lm', 'mflux', 'boogu_image_mlx', 'mlx_vlm', 'mlx_lama_swift', 'mlx_ddcolor_swift', 'diffusers', 'krea_diffusers', 'sam_mask', 'llama_cpp']);
+export const RECIPE_BACKENDS = new Set(['vllm', 'sglang', 'mlx_lm', 'mflux', 'boogu_image_mlx', 'mlx_vlm', 'mlx_lama_swift', 'mlx_ddcolor_swift', 'diffusers', 'krea_diffusers', 'sam_mask', 'llama_cpp', 'transformers_lora']);
 
 // All recipe entries for a given backend, in catalog order. The first one
 // is the model-specific match (when present); the last is always the

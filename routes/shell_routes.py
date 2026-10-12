@@ -223,6 +223,11 @@ def _package_installed_from_probe(name: str, probe: dict) -> bool:
             (dists.get("transformers") or modules.get("transformers", {}).get("real_module"))
             and (dists.get("torch") or modules.get("torch", {}).get("real_module"))
         )
+    if name == "transformers_lora":
+        return bool(
+            (dists.get("transformers") or modules.get("transformers", {}).get("real_module"))
+            and (dists.get("peft") or modules.get("peft", {}).get("real_module"))
+        )
     if name == "office_docs":
         return bool(
             dists.get("markitdown")
@@ -286,6 +291,10 @@ def _package_status_note(name: str, probe: dict) -> str:
         if _package_installed_from_probe(name, probe):
             return f"SAM object masks: transformers {dists.get('transformers', 'available')} with torch {dists.get('torch', 'available')}"
         return "SAM click/object mask selection needs transformers and torch."
+    if name == "transformers_lora":
+        if _package_installed_from_probe(name, probe):
+            return f"Transformers LoRA serving: transformers {dists.get('transformers', 'available')} with peft {dists.get('peft', 'available')}"
+        return "Transformers LoRA serving needs transformers and peft (plus torch)."
     if name == "office_docs":
         if _package_installed_from_probe(name, probe):
             if dists.get("markitdown"):
@@ -452,6 +461,7 @@ dist_names={{
     'mlx_ddcolor_swift':[],
     'diffusers':['diffusers','torch'],
     'krea_diffusers':['diffusers','torch'],
+    'transformers_lora':['transformers','peft'],
     'sam_mask':['transformers','torch'],
     'office_docs':['markitdown','python-docx'],
 	    'psd_tools':['psd-tools'],
@@ -1543,6 +1553,13 @@ def setup_shell_routes() -> APIRouter:
                 "target": "remote",
             },
             {
+                "name": "transformers_lora",
+                "pip": "transformers peft accelerate",
+                "desc": "Serve a base LLM with PEFT LoRA adapters (Transformers backend, CPU/small-GPU friendly)",
+                "category": "LLM",
+                "target": "remote",
+            },
+            {
                 "name": "APFEL",
                 "pip": "",
                 "desc": "OpenAI-compatible API for Apple Foundational Models on Apple Silicon",
@@ -1886,6 +1903,19 @@ def setup_shell_routes() -> APIRouter:
                         "dists": {"vllm": _vllm_version} if _vllm_version else {},
                     }
                     pkg["status_note"] = _package_status_note("vllm", probe)
+            elif pkg["name"] == "transformers_lora":
+                try:
+                    _import_optional_dependency_for_status("transformers")
+                    _import_optional_dependency_for_status("peft")
+                    _tf_ver = importlib_metadata.version("transformers")
+                    _peft_ver = importlib_metadata.version("peft")
+                    pkg["installed"] = True
+                    probe = {"dists": {"transformers": _tf_ver, "peft": _peft_ver}}
+                    pkg["status_note"] = _package_status_note("transformers_lora", probe)
+                except (ImportError, importlib_metadata.PackageNotFoundError):
+                    pkg["installed"] = False
+                except (Exception, SystemExit):
+                    pkg["installed"] = False
             else:
                 try:
                     _import_optional_dependency_for_status(pkg["name"])
@@ -2053,6 +2083,9 @@ def setup_shell_routes() -> APIRouter:
             "git+https://github.com/xocialize/boogu-image-mlx.git",
             "mlx-vlm",
             "transformers",
+            "peft",
+            "accelerate",
+            "torch",
             "TTS",
             "bark",
             "faster-whisper",
